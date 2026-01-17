@@ -242,7 +242,14 @@ S3 버킷 이름 규칙:
 ### 위의 경우 
 ![alt text](image-31.png)
 
-
+### 오류 사항
+![alt text](image-32.png)
+```
+EB_APPLICATION_NAME: 빈 값
+EB_FRONTEND_ENVIRONMENT_NAME: 빈 값
+EB_SIGNALING_ENVIRONMENT_NAME: 빈 값
+```
+![alt text](image-33.png)
 
 
 
