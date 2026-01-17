@@ -39,7 +39,7 @@ AWS_SECRET_ACCESS_KEY
 > - **TailwindCSS v3**: UI 빠르게 스타일링
 
 ---
-
+ 
 ## 1) 폴더 구조 (예시)
 
 ```
