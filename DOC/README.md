@@ -183,6 +183,7 @@ AWSServiceRoleForElasticBeanstalk 역할이 생성됩니다.
 ![alt text](image-26.png)
 
 ### 배포
+![alt text](image-38.png)
 ![alt text](image-27.png)
 
 
@@ -201,7 +202,7 @@ AWSServiceRoleForElasticBeanstalk 역할이 생성됩니다.
 ```
 ### 압축
 ```bash
-zip -r frontend-eb.zip Dockerrun.aws.json
+zip -r eb.zip Dockerrun.aws.json
 ```
 ![alt text](image-28.png)
 
@@ -269,7 +270,7 @@ EB_SIGNALING_ENVIRONMENT_NAME: 빈 값
 {
   "AWSEBDockerrunVersion": 1,
   "Image": {
-    "Name": "086015456585.dkr.ecr.ap-northeast-2.amazonaws.com/my-signaling:latest",
+    "Name": "086015456585.dkr.ecr.ap-northeast-2.amazonaws.com/my-signaling:<SHA 값>",
     "Update": "true"
   },
   "Ports": [
@@ -295,6 +296,8 @@ EB_SIGNALING_ENVIRONMENT_NAME: 빈 값
 ### EC2 현황
 ![alt text](image-36.png)
 
+### 보안그룹 일단 모두 Any
+![alt text](image-39.png)
 
 
 
