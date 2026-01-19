@@ -1,15 +1,18 @@
-name: Deploy frontend to Elastic Beanstalk
+name: Deploy to Elastic Beanstalk (Docker / Dockerrun)
 
 on:
   push:
     branches: ["main"]
     paths:
-      - "frontend/**"
-      - ".github/workflows/deploy-frontend-eb.yml"
+      - "docker-run-f/**"
+      - ".github/workflows/ecr-publish.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
-  group: deploy-frontend-eb-${{ github.ref }}
+  group: eb-docker-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -18,50 +21,80 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: frontend
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Install deps
-        run: npm ci
-
-      - name: Build
-        run: npm run build
-
-      - name: Create deploy bundle (zip)
-        run: |
-          rm -f deploy.zip
-          cd dist
-          zip -r ../deploy.zip .
-          cd ..
-
-      # rerun에서도 절대 안 겹치게 버전라벨 생성 (핵심)
-      - name: Set version label
+      # ✅ rerun에도 안 겹치는 버전/zip 이름
+      - name: Set version label & zip name (unique)
         run: |
           SHORT_SHA="${GITHUB_SHA:0:7}"
-          echo "VERSION_LABEL=frontend-${SHORT_SHA}-${{ github.run_attempt }}" >> $GITHUB_ENV
+          VERSION_LABEL="frontend-${SHORT_SHA}-${{ github.run_attempt }}"
+          ZIP_FILE="${VERSION_LABEL}.zip"
+
+          echo "VERSION_LABEL=$VERSION_LABEL" >> $GITHUB_ENV
+          echo "ZIP_FILE=$ZIP_FILE" >> $GITHUB_ENV
+
           echo "VERSION_LABEL=$VERSION_LABEL"
+          echo "ZIP_FILE=$ZIP_FILE"
 
-      - name: Deploy to Elastic Beanstalk
-        uses: einaregilsson/beanstalk-deploy@v22
-        with:
-          aws_access_key: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws_secret_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          region: ${{ secrets.AWS_REGION }}
-          application_name: ${{ secrets.EB_APPLICATION_NAME }}
-          environment_name: ${{ secrets.EB_FRONTEND_ENVIRONMENT_NAME }}
-          version_label: ${{ env.VERSION_LABEL }}
-          deployment_package: frontend/deploy.zip
-          wait_for_environment_recovery: 180
+      # ✅ Dockerrun 파일 존재/이름 검증
+      - name: Verify Dockerrun file
+        run: |
+          test -f docker-run-f/Dockerrun.aws.json || (echo "Missing docker-run-f/Dockerrun.aws.json" && ls -la docker-run-f && exit 1)
+          echo "Dockerrun present:"
+          ls -la docker-run-f/Dockerrun.aws.json
 
-      - name: Output
-        run: echo "Deployed version $VERSION_LABEL"
+      # ✅ EB 배포 번들(zip) 만들기
+      # - EB는 zip 루트에 Dockerrun.aws.json이 있어야 함(폴더 안에 있으면 실패)
+      - name: Create EB bundle zip
+        run: |
+          rm -f "$ZIP_FILE"
+          cd docker-run-f
+
+          # zip 루트에 Dockerrun.aws.json 포함 (가장 중요)
+          zip -r "../$ZIP_FILE" Dockerrun.aws.json
+
+          # (옵션) Dockerrun이 참조하는 파일이 로컬에 필요하면 같이 포함
+          # 예: nginx.conf, Dockerfile.frontend, .ebextensions 등
+          [ -f nginx.conf ] && zip -g "../$ZIP_FILE" nginx.conf
+          [ -f Dockerfile.frontend ] && zip -g "../$ZIP_FILE" Dockerfile.frontend
+          [ -d .ebextensions ] && zip -r "../$ZIP_FILE" .ebextensions
+
+          cd ..
+          echo "Bundle contents:"
+          unzip -l "$ZIP_FILE" | head -n 200
+
+      # ✅ S3 업로드 (EB 소스번들)
+      - name: Upload bundle to S3
+        run: |
+          aws s3 cp "$ZIP_FILE" "s3://${{ secrets.EB_S3_BUCKET }}/$ZIP_FILE"
+
+      # ✅ EB Application Version 생성 (중복 방지용 유니크 라벨 사용)
+      - name: Create EB application version
+        run: |
+          aws elasticbeanstalk create-application-version \
+            --application-name "${{ secrets.EB_APPLICATION_NAME }}" \
+            --version-label "$VERSION_LABEL" \
+            --source-bundle S3Bucket="${{ secrets.EB_S3_BUCKET }}",S3Key="$ZIP_FILE"
+
+      # ✅ 환경 업데이트
+      - name: Update EB environment
+        run: |
+          aws elasticbeanstalk update-environment \
+            --environment-name "${{ secrets.EB_FRONTEND_ENVIRONMENT_NAME }}" \
+            --version-label "$VERSION_LABEL"
+
+      - name: Done
+        run: |
+          echo "Deployed to EB!"
+          echo "Environment: ${{ secrets.EB_FRONTEND_ENVIRONMENT_NAME }}"
+          echo "Version: $VERSION_LABEL"
