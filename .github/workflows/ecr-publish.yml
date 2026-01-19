@@ -1,18 +1,15 @@
-name: Deploy to Elastic Beanstalk (Docker / Dockerrun)
+name: Deploy to Elastic Beanstalk (Auto-detect Dockerrun)
 
 on:
   push:
     branches: ["main"]
-    paths:
-      - "docker-run-f/**"
-      - ".github/workflows/ecr-publish.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: eb-docker-${{ github.ref }}
+  group: eb-autodetect-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -33,68 +30,93 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      # ✅ rerun에도 안 겹치는 버전/zip 이름
-      - name: Set version label & zip name (unique)
+      - name: Set unique version label & zip name
         run: |
+          set -euo pipefail
           SHORT_SHA="${GITHUB_SHA:0:7}"
           VERSION_LABEL="frontend-${SHORT_SHA}-${{ github.run_attempt }}"
           ZIP_FILE="${VERSION_LABEL}.zip"
-
-          echo "VERSION_LABEL=$VERSION_LABEL" >> $GITHUB_ENV
-          echo "ZIP_FILE=$ZIP_FILE" >> $GITHUB_ENV
-
+          echo "VERSION_LABEL=$VERSION_LABEL" >> "$GITHUB_ENV"
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
           echo "VERSION_LABEL=$VERSION_LABEL"
           echo "ZIP_FILE=$ZIP_FILE"
 
-      # ✅ Dockerrun 파일 존재/이름 검증
-      - name: Verify Dockerrun file
+      - name: Locate Dockerrun.aws.json (auto-detect)
         run: |
-          test -f docker-run-f/Dockerrun.aws.json || (echo "Missing docker-run-f/Dockerrun.aws.json" && ls -la docker-run-f && exit 1)
-          echo "Dockerrun present:"
-          ls -la docker-run-f/Dockerrun.aws.json
+          set -euo pipefail
+          echo "=== repo root ==="
+          ls -la
 
-      # ✅ EB 배포 번들(zip) 만들기
-      # - EB는 zip 루트에 Dockerrun.aws.json이 있어야 함(폴더 안에 있으면 실패)
-      - name: Create EB bundle zip
+          echo "=== searching Dockerrun.aws.json ==="
+          # 가장 먼저 발견된 Dockerrun.aws.json 1개를 사용
+          DOCKERRUN_PATH="$(find . -type f -name 'Dockerrun.aws.json' -print | head -n 1)"
+
+          if [ -z "${DOCKERRUN_PATH}" ]; then
+            echo "Dockerrun.aws.json not found anywhere in this repo."
+            echo "Hint: make sure the file name is exactly Dockerrun.aws.json"
+            exit 1
+          fi
+
+          # ./ 제거해서 다루기 쉽게 정리
+          DOCKERRUN_PATH="${DOCKERRUN_PATH#./}"
+          DOCKERRUN_DIR="$(dirname "$DOCKERRUN_PATH")"
+
+          echo "Found: $DOCKERRUN_PATH"
+          echo "DOCKERRUN_PATH=$DOCKERRUN_PATH" >> "$GITHUB_ENV"
+          echo "DOCKERRUN_DIR=$DOCKERRUN_DIR" >> "$GITHUB_ENV"
+
+          echo "=== Dockerrun dir listing ==="
+          ls -la "$DOCKERRUN_DIR"
+
+      - name: Create EB bundle zip (Dockerrun at zip root)
         run: |
+          set -euo pipefail
           rm -f "$ZIP_FILE"
-          cd docker-run-f
 
-          # zip 루트에 Dockerrun.aws.json 포함 (가장 중요)
-          zip -r "../$ZIP_FILE" Dockerrun.aws.json
+          # zip은 "루트에 Dockerrun.aws.json"이 있어야 EB가 안정적으로 인식
+          # 그래서 파일을 루트명으로 넣기 위해 -j 옵션(경로 제거)을 사용
+          zip -j "$ZIP_FILE" "$DOCKERRUN_PATH"
 
-          # (옵션) Dockerrun이 참조하는 파일이 로컬에 필요하면 같이 포함
-          # 예: nginx.conf, Dockerfile.frontend, .ebextensions 등
-          [ -f nginx.conf ] && zip -g "../$ZIP_FILE" nginx.conf
-          [ -f Dockerfile.frontend ] && zip -g "../$ZIP_FILE" Dockerfile.frontend
-          [ -d .ebextensions ] && zip -r "../$ZIP_FILE" .ebextensions
+          # Dockerrun이 같은 폴더의 파일들을 참조할 수 있어서,
+          # 흔히 같이 쓰는 파일들은 있으면 자동으로 추가
+          # (없어도 에러 안 나게 처리)
+          for f in nginx.conf Dockerfile Dockerfile.frontend docker-compose.yml Procfile; do
+            if [ -f "$DOCKERRUN_DIR/$f" ]; then
+              zip -j "$ZIP_FILE" "$DOCKERRUN_DIR/$f"
+            fi
+          done
 
-          cd ..
-          echo "Bundle contents:"
+          # .ebextensions 폴더는 경로 유지가 필요해서 -r로 추가 (있으면)
+          if [ -d "$DOCKERRUN_DIR/.ebextensions" ]; then
+            (cd "$DOCKERRUN_DIR" && zip -r "../$ZIP_FILE" ".ebextensions")
+          fi
+
+          echo "=== bundle contents ==="
           unzip -l "$ZIP_FILE" | head -n 200
 
-      # ✅ S3 업로드 (EB 소스번들)
       - name: Upload bundle to S3
         run: |
+          set -euo pipefail
           aws s3 cp "$ZIP_FILE" "s3://${{ secrets.EB_S3_BUCKET }}/$ZIP_FILE"
+          echo "Uploaded: s3://${{ secrets.EB_S3_BUCKET }}/$ZIP_FILE"
 
-      # ✅ EB Application Version 생성 (중복 방지용 유니크 라벨 사용)
-      - name: Create EB application version
+      - name: Create EB application version (unique label)
         run: |
+          set -euo pipefail
           aws elasticbeanstalk create-application-version \
             --application-name "${{ secrets.EB_APPLICATION_NAME }}" \
             --version-label "$VERSION_LABEL" \
             --source-bundle S3Bucket="${{ secrets.EB_S3_BUCKET }}",S3Key="$ZIP_FILE"
 
-      # ✅ 환경 업데이트
       - name: Update EB environment
         run: |
+          set -euo pipefail
           aws elasticbeanstalk update-environment \
             --environment-name "${{ secrets.EB_FRONTEND_ENVIRONMENT_NAME }}" \
             --version-label "$VERSION_LABEL"
 
       - name: Done
         run: |
-          echo "Deployed to EB!"
+          echo "Deployed!"
           echo "Environment: ${{ secrets.EB_FRONTEND_ENVIRONMENT_NAME }}"
           echo "Version: $VERSION_LABEL"
