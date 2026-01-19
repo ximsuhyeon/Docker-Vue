@@ -7,10 +7,10 @@
       <button @click="joinRoom" class="px-4 py-2 bg-blue-500 text-white rounded">🚪 Join Room</button>
     </div>
 
-    <!-- 화이트보드 -->
+    
     <Whiteboard v-if="joined" :webrtc="webrtc" />
 
-    <!-- 채팅 & 파일 -->
+    
     <div class="flex space-x-6 justify-center" v-if="joined">
       <ChatBox :webrtc="webrtc" />
       <FileBox :webrtc="webrtc" />
