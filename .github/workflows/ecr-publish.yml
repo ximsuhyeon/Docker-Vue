@@ -95,7 +95,7 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
           set -euo pipefail
-          VERSION="frontend-${GITHUB_SHA}"
+          VERSION="frontend-${GITHUB_RUN_ID}"
           ZIP="${VERSION}.zip"
 
           cat > Dockerrun.aws.json <<EOF
